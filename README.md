@@ -109,7 +109,7 @@ pip install huggingface_hub
 
 python -c "
 from huggingface_hub import snapshot_download
-snapshot_download('kornwtp/hoaxnews-ind-classfication', repo_type='dataset', local_dir='hf_hoax')
+snapshot_download(<nama_dataset>, repo_type='dataset', local_dir='hf_hoax')
 "
 ```
 
