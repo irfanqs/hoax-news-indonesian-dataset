@@ -84,32 +84,44 @@ module.exports = { summarize, classifyBert, factCheck, searchSerpApi, analyzeWit
 async function analyzeWithAI(claim, serpResults) {
   const GEMINI_URL = `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key=${process.env.GEMINI_API_KEY}`;
 
+  // Bangun evidence dengan URL eksplisit
   const evidence = serpResults.map((r, i) =>
-    `[${i + 1}] ${r.judul}\n${r.snippet}`
+    `[${i + 1}] Judul: ${r.judul}\nIsi: ${r.snippet}\nURL: ${r.url}`
   ).join('\n\n');
+
+  // Daftar URL untuk disertakan di sumber
+  const sourceList = serpResults
+    .filter(r => r.url)
+    .map((r, i) => `${i + 1}. ${r.judul}\n   ${r.url}`)
+    .join('\n');
 
   const prompt = `Kamu adalah sistem pendeteksi hoax berbahasa Indonesia yang akurat dan ringkas.
 
 Klaim yang perlu dicek:
 "${claim}"
 
-Bukti dari ${serpResults.length} artikel hasil pencarian:
+Bukti dari ${serpResults.length} artikel hasil pencarian (beserta URL-nya):
 ${evidence}
 
-Berikan output PERSIS dalam format berikut (tanpa teks tambahan di luar format ini):
+Tugas kamu:
+1. Tentukan apakah klaim ini HOAKS, BENAR, atau TIDAK DAPAT DIPASTIKAN
+2. Berikan confidence score (0-100%) berdasarkan kekuatan bukti
+3. Jelaskan alasan secara singkat dan terstruktur
+4. Sertakan sumber dari URL yang diberikan di atas
+
+Berikan output PERSIS dalam format berikut (jangan tambahkan teks lain di luar format):
 
 [HOAKS/BENAR/TIDAK DAPAT DIPASTIKAN] Confidence: XX.X%
 
 Klaim: "<tulis ulang klaim secara singkat>"
 
 Alasan:
-1. <alasan pertama>
-2. <alasan kedua>
-3. <alasan ketiga jika ada>
+1. <alasan pertama berdasarkan bukti>
+2. <alasan kedua berdasarkan bukti>
+3. <alasan ketiga jika relevan>
 
-Jika ada sumber resmi yang membantah/mengkonfirmasi, tambahkan:
-Sumber: <nama lembaga>
-<url jika tersedia>
+Sumber:
+${sourceList}
 
 Gunakan bahasa Indonesia yang jelas dan mudah dipahami masyarakat awam.`;
 
@@ -127,11 +139,11 @@ Gunakan bahasa Indonesia yang jelas dan mudah dipahami masyarakat awam.`;
     } catch (err) {
       lastError = err;
       if (err.response?.status === 429) {
-        const delay = attempt * 5000; // 5s, 10s, 15s
-        console.log(`[gemini] 429 rate limit, retry ${attempt}/3 setelah ${delay/1000}s...`);
+        const delay = attempt * 5000;
+        console.log(`[gemini] 429 rate limit, retry ${attempt}/3 setelah ${delay / 1000}s...`);
         await sleep(delay);
       } else {
-        throw err; // error lain langsung throw
+        throw err;
       }
     }
   }
