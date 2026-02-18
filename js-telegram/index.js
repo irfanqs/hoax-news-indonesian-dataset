@@ -7,19 +7,8 @@ const bot = new TelegramBot(process.env.TELEGRAM_BOT_TOKEN, { polling: true });
 
 // ── Helper ────────────────────────────────────────────────────
 
-const MODEL_KEYBOARD = {
-  reply_markup: {
-    inline_keyboard: [[
-      { text: 'BART', callback_data: 'BART' },
-      { text: 'BERT', callback_data: 'BERT' }
-    ]]
-  }
-};
-
 function formatFactCheckResults(results) {
-  if (!results || results.length === 0) {
-    return 'Tidak ditemukan hasil fact-check terkait.';
-  }
+  if (!results || results.length === 0) return null;
   return results.map((r, i) =>
     `${i + 1}. *${r.klaim}*\n   Rating: ${r.rating}\n   Sumber: ${r.sumber}\n   ${r.url}`
   ).join('\n\n');
@@ -32,37 +21,12 @@ bot.onText(/\/start/, (msg) => {
   console.log(`[/start] chatId=${chatId} user=${msg.chat.username || msg.chat.first_name}`);
   clearState(chatId);
   bot.sendMessage(chatId,
-    'Selamat datang di *Hoax Checker Bot*!\n\nPilih model yang ingin digunakan:',
-    { parse_mode: 'Markdown', ...MODEL_KEYBOARD }
+    '*Hoax Checker Bot* 🔍\n\nKirimkan teks berita atau pesan yang ingin kamu cek kebenarannya.\n\nBot akan:\n1. Menganalisis secara semantik (BERT)\n2. Meringkas teks (BART)\n3. Mengecek fakta & memberikan verdict AI',
+    { parse_mode: 'Markdown' }
   );
 });
 
-// ── Callback Query (GABUNGAN) ─────────────────────────────────
-
-bot.on('callback_query', async (query) => {
-  const chatId = query.message.chat.id;
-  const data = query.data;
-  console.log(`[callback] chatId=${chatId} data=${data}`);
-
-  await bot.answerCallbackQuery(query.id);
-
-  if (data === 'RESTART') {
-    clearState(chatId);
-    bot.sendMessage(chatId, 'Pilih model:', { ...MODEL_KEYBOARD });
-    return;
-  }
-
-  if (data === 'BERT' || data === 'BART') {
-    setState(chatId, { model: data, waitingInput: true });
-    const desc = data === 'BART'
-      ? 'BART akan meringkas teks kamu lalu mengecek fakta ke database fact-checker.'
-      : 'BERT akan langsung mengklasifikasi apakah teks kamu hoax atau bukan.';
-    bot.sendMessage(chatId,
-      `Model dipilih: *${data}*\n${desc}\n\nSilakan kirim teks yang ingin dicek:`,
-      { parse_mode: 'Markdown' }
-    );
-  }
-});
+// ── Pesan teks biasa ──────────────────────────────────────────
 
 bot.on('message', async (msg) => {
   const chatId = msg.chat.id;
@@ -71,78 +35,97 @@ bot.on('message', async (msg) => {
   // Skip command
   if (!text || text.startsWith('/')) return;
 
-  const state = getState(chatId);
-  console.log(`[message] chatId=${chatId} model=${state.model} text="${text.slice(0, 50)}..."`);
+  console.log(`[message] chatId=${chatId} text="${text.slice(0, 60)}..."`);
 
-  // Belum pilih model
-  if (!state.model || !state.waitingInput) {
-    bot.sendMessage(chatId, 'Silakan mulai dengan /start dan pilih model terlebih dahulu.');
-    return;
-  }
-
-  // Set waitingInput false agar tidak proses ulang
-  setState(chatId, { waitingInput: false });
-  bot.sendMessage(chatId, 'Sedang memproses...');
+  bot.sendMessage(chatId, '⏳ Memproses teks kamu...');
 
   try {
-    if (state.model === 'BART') {
-      bot.sendMessage(chatId, 'Meringkas teks...');
-      const summary = await summarize(text);
+    // ── Step 1: BERT - Klasifikasi Semantik ──────────────────
+    bot.sendMessage(chatId, '🧠 *Step 1/3: Analisis Semantik (BERT)*', { parse_mode: 'Markdown' });
 
+    let bertResult = null;
+    try {
+      bertResult = await classifyBert(text);
+      const emoji = bertResult.label === 'BENAR' ? '✅' : '❌';
       bot.sendMessage(chatId,
-        `*Ringkasan:*\n${summary}\n\nSedang mengecek fakta...`,
+        `${emoji} *Hasil Semantik BERT:* ${bertResult.label}\nKepercayaan: ${bertResult.confidence}%`,
         { parse_mode: 'Markdown' }
       );
+    } catch (bertErr) {
+      console.error('[bert] error:', bertErr.message);
+      bot.sendMessage(chatId, '⚠️ BERT tidak tersedia, melanjutkan ke langkah berikutnya...');
+    }
 
-      const results = await factCheck(summary);
+    // ── Step 2: BART - Summarize ─────────────────────────────
+    bot.sendMessage(chatId, '📝 *Step 2/3: Meringkas Teks (BART)*', { parse_mode: 'Markdown' });
 
-      if (results.length > 0) {
-        // Ada hasil dari Google Fact Check API
-        bot.sendMessage(chatId,
-          `*Hasil Fact Check:*\n\n${formatFactCheckResults(results)}`,
-          { parse_mode: 'Markdown', disable_web_page_preview: true }
-        );
+    let summary = text; // fallback: pakai teks asli jika BART gagal
+    try {
+      summary = await summarize(text);
+      bot.sendMessage(chatId,
+        `*Ringkasan:*\n${summary}`,
+        { parse_mode: 'Markdown' }
+      );
+    } catch (bartErr) {
+      console.error('[bart] error:', bartErr.message);
+      bot.sendMessage(chatId, '⚠️ BART tidak tersedia, menggunakan teks asli untuk fact check...');
+    }
+
+    // ── Step 3: Fact Check + AI Verdict ──────────────────────
+    bot.sendMessage(chatId, '🔎 *Step 3/3: Pengecekan Fakta*', { parse_mode: 'Markdown' });
+
+    const factResults = await factCheck(summary);
+    const formatted = formatFactCheckResults(factResults);
+
+    if (formatted) {
+      // Ada hasil dari Google Fact Check API
+      bot.sendMessage(chatId,
+        `*Hasil Fact Check:*\n\n${formatted}`,
+        { parse_mode: 'Markdown', disable_web_page_preview: true }
+      );
+    } else {
+      // Fallback ke SerpAPI + AI Verdict
+      bot.sendMessage(chatId, 'Tidak ada di database fact-check. Mencari via Google...');
+      const serpResults = await searchSerpApi(summary);
+
+      if (serpResults.length > 0) {
+        bot.sendMessage(chatId, `Ditemukan ${serpResults.length} artikel terkait. Menganalisis dengan AI... 🤖`);
+        const verdict = await analyzeWithAI(summary, serpResults);
+        bot.sendMessage(chatId, verdict, { parse_mode: 'Markdown', disable_web_page_preview: true });
       } else {
-        // Fallback ke SerpAPI
-        bot.sendMessage(chatId, 'Tidak ada di database fact-check. Mencari via Google...');
-        const serpResults = await searchSerpApi(summary);
-        if (serpResults.length > 0) {
-          bot.sendMessage(chatId, `Ditemukan ${serpResults.length} artikel terkait. Menganalisis dengan AI... 🤖`);
-          const verdict = await analyzeWithAI(summary, serpResults);
-          bot.sendMessage(chatId, verdict, { parse_mode: 'Markdown', disable_web_page_preview: true });
-        } else {
-          bot.sendMessage(chatId, 'Tidak ditemukan informasi terkait klaim ini.');
-        }
+        bot.sendMessage(chatId, 'Tidak ditemukan informasi terkait klaim ini di internet.');
       }
-
-    } else if (state.model === 'BERT') {
-      bot.sendMessage(chatId, 'Mengklasifikasi teks...');
-      const result = await classifyBert(text);
-      const emoji = result.label === 'BENAR' ? '✅' : '❌';
-      bot.sendMessage(chatId,
-        `${emoji} *Hasil Klasifikasi: ${result.label}*\nKepercayaan: ${result.confidence}%`,
-        { parse_mode: 'Markdown' }
-      );
     }
 
   } catch (err) {
     console.error('[error]', err.message);
     bot.sendMessage(chatId,
-      'Terjadi kesalahan saat memproses. Pastikan backend sudah berjalan.\n\nKetik /start untuk mencoba lagi.'
+      '❌ Terjadi kesalahan saat memproses. Pastikan backend sudah berjalan.\n\nKetik /start untuk mencoba lagi.'
     );
-    clearState(chatId);
     return;
   }
 
   // Tawarkan cek lagi
-  bot.sendMessage(chatId, 'Ingin mengecek teks lain?', {
+  bot.sendMessage(chatId, 'Ingin mengecek teks lain? Kirimkan teks berikutnya atau ketik /start.', {
     reply_markup: {
       inline_keyboard: [[
-        { text: 'Ya, cek lagi', callback_data: state.model },
-        { text: 'Ganti model', callback_data: 'RESTART' }
+        { text: '🔄 Cek teks lain', callback_data: 'RESTART' }
       ]]
     }
   });
+});
+
+// ── Callback Query ────────────────────────────────────────────
+
+bot.on('callback_query', async (query) => {
+  const chatId = query.message.chat.id;
+  console.log(`[callback] chatId=${chatId} data=${query.data}`);
+  await bot.answerCallbackQuery(query.id);
+
+  if (query.data === 'RESTART') {
+    clearState(chatId);
+    bot.sendMessage(chatId, 'Silakan kirimkan teks yang ingin dicek:');
+  }
 });
 
 console.log('Bot started...');
