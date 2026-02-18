@@ -88,23 +88,52 @@ async function analyzeWithAI(claim, serpResults) {
     `[${i + 1}] ${r.judul}\n${r.snippet}`
   ).join('\n\n');
 
-  const prompt = `Kamu adalah sistem pendeteksi hoax berbahasa Indonesia.
+  const prompt = `Kamu adalah sistem pendeteksi hoax berbahasa Indonesia yang akurat dan ringkas.
 
 Klaim yang perlu dicek:
 "${claim}"
 
-Bukti dari hasil pencarian internet:
+Bukti dari ${serpResults.length} artikel hasil pencarian:
 ${evidence}
 
-Berdasarkan bukti di atas, berikan analisis singkat dalam format berikut:
-VERDICT: [HOAX / BENAR / TIDAK DAPAT DIPASTIKAN]
-ALASAN: [1-2 kalimat penjelasan singkat]
-KESIMPULAN: [1 kalimat ringkasan untuk pengguna awam]`;
+Berikan output PERSIS dalam format berikut (tanpa teks tambahan di luar format ini):
 
-  const res = await axios.post(GEMINI_URL, {
-    contents: [{ parts: [{ text: prompt }] }]
-  }, { timeout: 15000 });
+[HOAKS/BENAR/TIDAK DAPAT DIPASTIKAN] Confidence: XX.X%
 
-  const text = res.data.candidates?.[0]?.content?.parts?.[0]?.text || '';
-  return text.trim();
+Klaim: "<tulis ulang klaim secara singkat>"
+
+Alasan:
+1. <alasan pertama>
+2. <alasan kedua>
+3. <alasan ketiga jika ada>
+
+Jika ada sumber resmi yang membantah/mengkonfirmasi, tambahkan:
+Sumber: <nama lembaga>
+<url jika tersedia>
+
+Gunakan bahasa Indonesia yang jelas dan mudah dipahami masyarakat awam.`;
+
+  const sleep = (ms) => new Promise(r => setTimeout(r, ms));
+
+  let lastError;
+  for (let attempt = 1; attempt <= 3; attempt++) {
+    try {
+      const res = await axios.post(GEMINI_URL, {
+        contents: [{ parts: [{ text: prompt }] }]
+      }, { timeout: 20000 });
+
+      const text = res.data.candidates?.[0]?.content?.parts?.[0]?.text || '';
+      return text.trim();
+    } catch (err) {
+      lastError = err;
+      if (err.response?.status === 429) {
+        const delay = attempt * 5000; // 5s, 10s, 15s
+        console.log(`[gemini] 429 rate limit, retry ${attempt}/3 setelah ${delay/1000}s...`);
+        await sleep(delay);
+      } else {
+        throw err; // error lain langsung throw
+      }
+    }
+  }
+  throw lastError;
 }

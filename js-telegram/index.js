@@ -10,8 +10,8 @@ const bot = new TelegramBot(process.env.TELEGRAM_BOT_TOKEN, { polling: true });
 const MODEL_KEYBOARD = {
   reply_markup: {
     inline_keyboard: [[
-      { text: 'BART (Summarize + Fact Check)', callback_data: 'BART' },
-      { text: 'BERT (Klasifikasi Langsung)', callback_data: 'BERT' }
+      { text: 'BART', callback_data: 'BART' },
+      { text: 'BERT', callback_data: 'BERT' }
     ]]
   }
 };
@@ -64,8 +64,6 @@ bot.on('callback_query', async (query) => {
   }
 });
 
-// ── Pesan teks biasa ──────────────────────────────────────────
-
 bot.on('message', async (msg) => {
   const chatId = msg.chat.id;
   const text = msg.text;
@@ -109,21 +107,9 @@ bot.on('message', async (msg) => {
         bot.sendMessage(chatId, 'Tidak ada di database fact-check. Mencari via Google...');
         const serpResults = await searchSerpApi(summary);
         if (serpResults.length > 0) {
-          const serpText = serpResults.map((r, i) =>
-            `${i + 1}. *${r.judul}*\n   ${r.snippet}\n   ${r.url}`
-          ).join('\n\n');
-          bot.sendMessage(chatId,
-            `*Hasil Pencarian Google:*\n\n${serpText}`,
-            { parse_mode: 'Markdown', disable_web_page_preview: true }
-          );
-
-          // Analisis AI berdasarkan hasil scraping
-          bot.sendMessage(chatId, '🤖 Menganalisis dengan AI...');
+          bot.sendMessage(chatId, `Ditemukan ${serpResults.length} artikel terkait. Menganalisis dengan AI... 🤖`);
           const verdict = await analyzeWithAI(summary, serpResults);
-          bot.sendMessage(chatId,
-            `*Analisis AI:*\n\n${verdict}`,
-            { parse_mode: 'Markdown' }
-          );
+          bot.sendMessage(chatId, verdict, { parse_mode: 'Markdown', disable_web_page_preview: true });
         } else {
           bot.sendMessage(chatId, 'Tidak ditemukan informasi terkait klaim ini.');
         }
