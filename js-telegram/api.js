@@ -4,9 +4,6 @@ require('dotenv').config();
 const FACT_CHECK_URL = 'https://factchecktools.googleapis.com/v1alpha1/claims:search';
 const SERP_API_URL = 'https://serpapi.com/search';
 
-/**
- * Summarize teks panjang menggunakan mBART FastAPI
- */
 async function summarize(text) {
   const res = await axios.post(`${process.env.BART_API_URL}/summarize`, { text }, {
     headers: { 'ngrok-skip-browser-warning': 'true' },
@@ -15,9 +12,6 @@ async function summarize(text) {
   return res.data.summary;
 }
 
-/**
- * Klasifikasi teks menggunakan IndoBERT FastAPI
- */
 async function classifyBert(text) {
   const res = await axios.post(`${process.env.BERT_API_URL}/predict`, { text }, {
     headers: { 'ngrok-skip-browser-warning': 'true' },
@@ -26,9 +20,6 @@ async function classifyBert(text) {
   return res.data; // { label, confidence }
 }
 
-/**
- * Hit Google Fact Check API
- */
 async function factCheck(query) {
   const res = await axios.get(FACT_CHECK_URL, {
     params: {
@@ -36,7 +27,7 @@ async function factCheck(query) {
       key: process.env.FACT_CHECK_API_KEY,
       languageCode: 'id'
     },
-    timeout: 10000
+    timeout: 20000
   });
 
   const claims = res.data.claims || [];
@@ -48,9 +39,6 @@ async function factCheck(query) {
   }));
 }
 
-/**
- * Fallback: Cari via SerpAPI jika Fact Check API tidak ada hasil
- */
 async function searchSerpApi(query) {
   const res = await axios.get(SERP_API_URL, {
     params: {
@@ -61,7 +49,7 @@ async function searchSerpApi(query) {
       hl: 'id',
       gl: 'id'
     },
-    timeout: 10000
+    timeout: 15000
   });
 
   const organicResults = res.data.organic_results || [];
@@ -77,19 +65,13 @@ async function searchSerpApi(query) {
 
 module.exports = { summarize, classifyBert, factCheck, searchSerpApi, analyzeWithAI };
 
-/**
- * Analisis hasil scraping dengan Gemini AI
- * Merangkum bukti dan menilai apakah klaim adalah hoax
- */
 async function analyzeWithAI(claim, serpResults) {
   const GEMINI_URL = `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key=${process.env.GEMINI_API_KEY}`;
 
-  // Bangun evidence dengan URL eksplisit
   const evidence = serpResults.map((r, i) =>
     `[${i + 1}] Judul: ${r.judul}\nIsi: ${r.snippet}\nURL: ${r.url}`
   ).join('\n\n');
 
-  // Daftar URL untuk disertakan di sumber
   const sourceList = serpResults
     .filter(r => r.url)
     .map((r, i) => `${i + 1}. ${r.judul}\n   ${r.url}`)

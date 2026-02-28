@@ -1,2 +1,8 @@
 .venv
 .DS_Store
+*/.env
+*/node_modules
+n8n-telegram/
+liputan6-com-2026-01-19-3.csv
+turnbackhoax-id-2026-01-19.csv
+bart-fastapi.py

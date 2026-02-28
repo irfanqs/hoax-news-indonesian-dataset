@@ -1,5 +1,3 @@
-// State management sederhana pakai Map (in-memory)
-// Format: { chatId: { model: 'BERT'|'BART', waitingInput: boolean } }
 const userState = new Map();
 
 function setState(chatId, data) {

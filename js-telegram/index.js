@@ -48,8 +48,7 @@ bot.on('message', async (msg) => {
       bertResult = await classifyBert(text);
       const emoji = bertResult.label === 'BENAR' ? '✅' : '❌';
       bot.sendMessage(chatId,
-        `${emoji} *Hasil Semantik BERT:* ${bertResult.label}\nKepercayaan: ${bertResult.confidence}%`,
-        { parse_mode: 'Markdown' }
+        `${emoji} Hasil Semantik BERT: ${bertResult.label}\nKepercayaan: ${bertResult.confidence}%`
       );
     } catch (bertErr) {
       console.error('[bert] error:', bertErr.message);
@@ -57,18 +56,20 @@ bot.on('message', async (msg) => {
     }
 
     // ── Step 2: BART - Summarize ─────────────────────────────
-    bot.sendMessage(chatId, '📝 *Step 2/3: Meringkas Teks (BART)*', { parse_mode: 'Markdown' });
+    const wordCount = text.trim().split(/\s+/).length;
+    let summary = text;
 
-    let summary = text; // fallback: pakai teks asli jika BART gagal
-    try {
-      summary = await summarize(text);
-      bot.sendMessage(chatId,
-        `*Ringkasan:*\n${summary}`,
-        { parse_mode: 'Markdown' }
-      );
-    } catch (bartErr) {
-      console.error('[bart] error:', bartErr.message);
-      bot.sendMessage(chatId, '⚠️ BART tidak tersedia, menggunakan teks asli untuk fact check...');
+    if (wordCount < 200) {
+      bot.sendMessage(chatId, '📝 Step 2/3: Meringkas Teks (BART)\nTeks sudah cukup singkat, melewati ringkasan...');
+    } else {
+      bot.sendMessage(chatId, '📝 Step 2/3: Meringkas Teks (BART)', { parse_mode: 'Markdown' });
+      try {
+        summary = await summarize(text);
+        bot.sendMessage(chatId, `📄 Ringkasan:\n${summary}`);
+      } catch (bartErr) {
+        console.error('[bart] error:', bartErr.message);
+        bot.sendMessage(chatId, '⚠️ BART tidak tersedia, menggunakan teks asli untuk fact check...');
+      }
     }
 
     // ── Step 3: Fact Check + AI Verdict ──────────────────────
@@ -78,10 +79,9 @@ bot.on('message', async (msg) => {
     const formatted = formatFactCheckResults(factResults);
 
     if (formatted) {
-      // Ada hasil dari Google Fact Check API
       bot.sendMessage(chatId,
-        `*Hasil Fact Check:*\n\n${formatted}`,
-        { parse_mode: 'Markdown', disable_web_page_preview: true }
+        `📋 Hasil Fact Check:\n\n${formatted}`,
+        { disable_web_page_preview: true }
       );
     } else {
       // Fallback ke SerpAPI + AI Verdict
@@ -91,7 +91,7 @@ bot.on('message', async (msg) => {
       if (serpResults.length > 0) {
         bot.sendMessage(chatId, `Ditemukan ${serpResults.length} artikel terkait. Menganalisis dengan AI... 🤖`);
         const verdict = await analyzeWithAI(summary, serpResults);
-        bot.sendMessage(chatId, verdict, { parse_mode: 'Markdown', disable_web_page_preview: true });
+        bot.sendMessage(chatId, verdict, { disable_web_page_preview: true });
       } else {
         bot.sendMessage(chatId, 'Tidak ditemukan informasi terkait klaim ini di internet.');
       }
