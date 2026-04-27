@@ -1,7 +1,7 @@
 require('dotenv').config();
 const TelegramBot = require('node-telegram-bot-api');
 const { setState, getState, clearState } = require('./state');
-const { summarize, classifyBert, factCheck, searchSerpApi, analyzeWithAI } = require('./api');
+const { summarize, classifyBert, factCheck, searchSerpApi } = require('./api');
 
 const bot = new TelegramBot(process.env.TELEGRAM_BOT_TOKEN, { polling: true });
 
@@ -89,9 +89,18 @@ bot.on('message', async (msg) => {
       const serpResults = await searchSerpApi(summary);
 
       if (serpResults.length > 0) {
-        bot.sendMessage(chatId, `Ditemukan ${serpResults.length} artikel terkait. Menganalisis dengan AI... 🤖`);
-        const verdict = await analyzeWithAI(summary, serpResults);
-        bot.sendMessage(chatId, verdict, { parse_mode: 'Markdown', disable_web_page_preview: true });
+        const articles = serpResults.map((r, i) =>
+          `${i + 1}. *${r.judul}*\n${r.snippet}\n${r.url}`
+        ).join('\n\n');
+
+        const verdict = bertResult
+          ? `*Verdict: ${bertResult.label}* (${bertResult.confidence}% confidence dari BERT)`
+          : '*Verdict: Tidak dapat ditentukan otomatis*';
+
+        bot.sendMessage(chatId,
+          `${verdict}\n\n*Artikel terkait:*\n\n${articles}`,
+          { parse_mode: 'Markdown', disable_web_page_preview: true }
+        );
       } else {
         bot.sendMessage(chatId, 'Tidak ditemukan informasi terkait klaim ini di internet.');
       }
