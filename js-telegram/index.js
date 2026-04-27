@@ -7,6 +7,10 @@ const bot = new TelegramBot(process.env.TELEGRAM_BOT_TOKEN, { polling: true });
 
 // ── Helper ────────────────────────────────────────────────────
 
+function escapeMarkdown(text) {
+  return String(text).replace(/[*_`[\]]/g, '\\$&');
+}
+
 function formatFactCheckResults(results) {
   if (!results || results.length === 0) return null;
   return results.map((r, i) =>
@@ -89,17 +93,19 @@ bot.on('message', async (msg) => {
       const serpResults = await searchSerpApi(summary);
 
       if (serpResults.length > 0) {
-        const articles = serpResults.map((r, i) =>
-          `${i + 1}. *${r.judul}*\n${r.snippet}\n${r.url}`
-        ).join('\n\n');
-
         const verdict = bertResult
           ? `*Verdict: ${bertResult.label}* (${bertResult.confidence}% confidence dari BERT)`
           : '*Verdict: Tidak dapat ditentukan otomatis*';
 
+        bot.sendMessage(chatId, verdict, { parse_mode: 'Markdown' });
+
+        const articles = serpResults.map((r, i) =>
+          `${i + 1}. ${r.judul}\n${r.snippet}\n${r.url}`
+        ).join('\n\n');
+
         bot.sendMessage(chatId,
-          `${verdict}\n\n*Artikel terkait:*\n\n${articles}`,
-          { parse_mode: 'Markdown', disable_web_page_preview: true }
+          `Artikel terkait:\n\n${articles}`,
+          { disable_web_page_preview: true }
         );
       } else {
         bot.sendMessage(chatId, 'Tidak ditemukan informasi terkait klaim ini di internet.');
