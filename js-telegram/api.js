@@ -82,6 +82,40 @@ const FACT_KEYWORDS = [
   'sahih', 'akurat', 'benar adanya', 'telah dikonfirmasi'
 ];
 
+// ── Regex NER: Number Extraction ─────────────────────────────
+
+function extractNumbers(text) {
+  const matches = text.match(/\b\d[\d.,]*\b/g) || [];
+  return matches
+    .map(n => parseFloat(n.replace(/\./g, '').replace(',', '.')))
+    .filter(n => !isNaN(n) && n >= 10 && (n < 1900 || n > 2100)); // abaikan tahun & angka kecil
+}
+
+function detectNumberMismatch(summary, serpResults) {
+  const summaryNums = extractNumbers(summary);
+  if (summaryNums.length === 0) return { mismatch: false, summaryNums: [], articleNums: [] };
+
+  const allArticleText = serpResults.map(r => r.judul + ' ' + r.snippet).join(' ');
+  const articleNums = extractNumbers(allArticleText);
+  if (articleNums.length === 0) return { mismatch: false, summaryNums, articleNums };
+
+  // Cek apakah tiap angka penting di summary punya padanan di artikel (toleransi 20%)
+  const mismatched = summaryNums.filter(sNum => {
+    const hasMatch = articleNums.some(aNum => {
+      const ratio = sNum > aNum ? sNum / aNum : aNum / sNum;
+      return ratio <= 1.2; // toleransi 20%
+    });
+    return !hasMatch;
+  });
+
+  return {
+    mismatch: mismatched.length > 0,
+    mismatchedNums: mismatched,
+    summaryNums,
+    articleNums
+  };
+}
+
 function jaccardSimilarity(text1, text2) {
   const tokenize = t => new Set(
     t.toLowerCase().split(/\s+/).filter(w => w.length > 2)
@@ -106,7 +140,7 @@ function decisionFusion(serpResults, bertResult, threshold = 1, simThreshold = 0
     else if (hasFact && !hasHoax) T++;
   }
 
-  // Jika tidak ada keyword match, gunakan similarity antara summary dan artikel
+  // Jika tidak ada keyword match, gunakan similarity + NER number check
   if (E === 0 && T === 0 && serpResults.length > 0) {
     const summary = bertResult?._summary || '';
     const similarities = serpResults.map(r =>
@@ -115,7 +149,21 @@ function decisionFusion(serpResults, bertResult, threshold = 1, simThreshold = 0
     const avgSim = similarities.reduce((a, b) => a + b, 0) / similarities.length;
 
     if (avgSim >= simThreshold) {
-      // Artikel membahas topik yang sama → dianggap fakta
+      // Topik sama → cek apakah ada angka yang dikarang
+      const nerCheck = detectNumberMismatch(summary, serpResults);
+      if (nerCheck.mismatch) {
+        // Angka di summary tidak cocok dengan artikel → kemungkinan dilebih-lebihkan
+        return {
+          label: 'HOAKS',
+          source: 'ner',
+          E, T,
+          diff: 0,
+          avgSim: avgSim.toFixed(3),
+          mismatchedNums: nerCheck.mismatchedNums,
+          summaryNums: nerCheck.summaryNums,
+          articleNums: nerCheck.articleNums
+        };
+      }
       T = serpResults.length;
     }
 
@@ -191,6 +239,9 @@ function formatResult(bertResult, factResults, serpResults, fusion = null) {
     msg += `_Diputuskan berdasarkan ${fusion.E + fusion.T} artikel eksternal_\n`;
   } else if (fusion && fusion.source === 'similarity') {
     msg += `_Diputuskan berdasarkan kemiripan topik artikel (similarity: ${fusion.avgSim})_\n`;
+  } else if (fusion && fusion.source === 'ner') {
+    msg += `_Topik cocok tapi angka tidak sesuai artikel (similarity: ${fusion.avgSim})_\n`;
+    msg += `_Angka mencurigakan: ${fusion.mismatchedNums?.join(', ')} — artikel menyebut: ${fusion.articleNums?.join(', ')}_\n`;
   } else {
     msg += `_Diputuskan berdasarkan model BERT_\n`;
   }
