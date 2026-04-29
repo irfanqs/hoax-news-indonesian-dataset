@@ -195,8 +195,24 @@ async function decisionFusion(serpResults, bertResult, threshold = 1, simThresho
   }
 
   const diff = Math.abs(E - T);
+  const summary = bertResult?._summary || '';
 
   if (diff >= threshold) {
+    // Keyword match cukup kuat → tetap cek NER sebelum memutuskan
+    if (E <= T) {
+      const spacyjResult = await nerCheck(summary, serpResults);
+      const hasMismatch = spacyjResult
+        ? spacyjResult.has_mismatch
+        : detectNumberMismatch(summary, serpResults).mismatch;
+
+      if (hasMismatch) {
+        const mismatchDetail = spacyjResult
+          ? Object.entries(spacyjResult.mismatch).map(([k, v]) => `${k}: ${v.join(', ')}`).join(' | ')
+          : detectNumberMismatch(summary, serpResults).mismatchedNums?.join(', ');
+
+        return { label: 'HOAKS', source: 'ner', E, T, diff, avgSim: null, nerDetail: mismatchDetail };
+      }
+    }
     return { label: E > T ? 'HOAKS' : 'BENAR', source: 'external', E, T, diff, avgSim: null };
   } else {
     return {
