@@ -79,7 +79,7 @@ bot.on('message', async (msg) => {
       bot.sendMessage(chatId, 'Tidak ditemukan informasi terkait klaim ini di internet.');
     } else {
       const fusion = serpResults.length > 0
-        ? decisionFusion(serpResults, { ...bertResult, _summary: summary })
+        ? await decisionFusion(serpResults, { ...bertResult, _summary: summary })
         : null;
 
       const msg = formatResult(bertResult, factResults, serpResults, fusion);

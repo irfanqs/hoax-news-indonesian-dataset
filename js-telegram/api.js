@@ -127,7 +127,20 @@ function jaccardSimilarity(text1, text2) {
   return union.size === 0 ? 0 : intersection.size / union.size;
 }
 
-function decisionFusion(serpResults, bertResult, threshold = 1, simThreshold = 0.08) {
+async function nerCheck(summary, serpResults) {
+  try {
+    const articles = serpResults.map(r => r.judul + ' ' + r.snippet);
+    const res = await axios.post(`${process.env.BERT_API_URL}/ner`, { summary, articles }, {
+      headers: { 'ngrok-skip-browser-warning': 'true' },
+      timeout: 15000
+    });
+    return res.data; // { summary_entities, article_entities, mismatch, has_mismatch }
+  } catch {
+    return null; // fallback ke regex jika endpoint tidak tersedia
+  }
+}
+
+async function decisionFusion(serpResults, bertResult, threshold = 1, simThreshold = 0.08) {
   let E = 0;
   let T = 0;
 
@@ -149,19 +162,24 @@ function decisionFusion(serpResults, bertResult, threshold = 1, simThreshold = 0
     const avgSim = similarities.reduce((a, b) => a + b, 0) / similarities.length;
 
     if (avgSim >= simThreshold) {
-      // Topik sama → cek apakah ada angka yang dikarang
-      const nerCheck = detectNumberMismatch(summary, serpResults);
-      if (nerCheck.mismatch) {
-        // Angka di summary tidak cocok dengan artikel → kemungkinan dilebih-lebihkan
+      // Topik sama → cek mismatch entitas via spaCy, fallback ke regex
+      const spacyjResult = await nerCheck(summary, serpResults);
+      const hasMismatch = spacyjResult
+        ? spacyjResult.has_mismatch
+        : detectNumberMismatch(summary, serpResults).mismatch;
+
+      const mismatchDetail = spacyjResult
+        ? Object.entries(spacyjResult.mismatch).map(([k, v]) => `${k}: ${v.join(', ')}`).join(' | ')
+        : detectNumberMismatch(summary, serpResults).mismatchedNums?.join(', ');
+
+      if (hasMismatch) {
         return {
           label: 'HOAKS',
           source: 'ner',
           E, T,
           diff: 0,
           avgSim: avgSim.toFixed(3),
-          mismatchedNums: nerCheck.mismatchedNums,
-          summaryNums: nerCheck.summaryNums,
-          articleNums: nerCheck.articleNums
+          nerDetail: mismatchDetail
         };
       }
       T = serpResults.length;
@@ -240,8 +258,8 @@ function formatResult(bertResult, factResults, serpResults, fusion = null) {
   } else if (fusion && fusion.source === 'similarity') {
     msg += `_Diputuskan berdasarkan kemiripan topik artikel (similarity: ${fusion.avgSim})_\n`;
   } else if (fusion && fusion.source === 'ner') {
-    msg += `_Topik cocok tapi angka tidak sesuai artikel (similarity: ${fusion.avgSim})_\n`;
-    msg += `_Angka mencurigakan: ${fusion.mismatchedNums?.join(', ')} — artikel menyebut: ${fusion.articleNums?.join(', ')}_\n`;
+    msg += `_Topik cocok tapi entitas tidak sesuai artikel (similarity: ${fusion.avgSim})_\n`;
+    if (fusion.nerDetail) msg += `_Entitas mencurigakan: ${fusion.nerDetail}_\n`;
   } else {
     msg += `_Diputuskan berdasarkan model BERT_\n`;
   }
