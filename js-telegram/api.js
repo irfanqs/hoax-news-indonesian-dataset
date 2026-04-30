@@ -1,4 +1,6 @@
 const axios = require('axios');
+const natural = require('natural');
+const TfIdf = natural.TfIdf;
 require('dotenv').config();
 
 const FACT_CHECK_URL = 'https://factchecktools.googleapis.com/v1alpha1/claims:search';
@@ -12,6 +14,27 @@ async function summarize(text) {
     timeout: 60000
   });
   return res.data.summary;
+}
+
+// ── BART Summarize Articles (batch) ──────────────────────────
+
+async function summarizeArticles(serpResults) {
+  return await Promise.all(
+    serpResults.map(async (r) => {
+      const combined = `${r.judul}. ${r.snippet}`;
+      try {
+        // Snippet sudah pendek, cukup gabung judul+snippet sebagai "summary"-nya
+        // Hanya panggil BART jika teks cukup panjang (> 100 karakter)
+        if (combined.length > 100) {
+          const summary = await summarize(combined);
+          return { ...r, summarized: summary };
+        }
+        return { ...r, summarized: combined };
+      } catch {
+        return { ...r, summarized: combined }; // fallback ke teks asli
+      }
+    })
+  );
 }
 
 // ── BERT Classification ───────────────────────────────────────
@@ -116,20 +139,35 @@ function detectNumberMismatch(summary, serpResults) {
   };
 }
 
-function jaccardSimilarity(text1, text2) {
-  const tokenize = t => new Set(
-    t.toLowerCase().split(/\s+/).filter(w => w.length > 2)
-  );
-  const a = tokenize(text1);
-  const b = tokenize(text2);
-  const intersection = new Set([...a].filter(w => b.has(w)));
-  const union = new Set([...a, ...b]);
-  return union.size === 0 ? 0 : intersection.size / union.size;
+function cosineSimilarity(text1, text2) {
+  const tfidf = new TfIdf();
+  tfidf.addDocument(text1.toLowerCase());
+  tfidf.addDocument(text2.toLowerCase());
+
+  // Kumpulkan semua term unik dari kedua dokumen
+  const terms = new Set();
+  tfidf.listTerms(0).forEach(t => terms.add(t.term));
+  tfidf.listTerms(1).forEach(t => terms.add(t.term));
+
+  // Buat vektor TF-IDF untuk masing-masing dokumen
+  const vec1 = [], vec2 = [];
+  for (const term of terms) {
+    vec1.push(tfidf.tfidf(term, 0));
+    vec2.push(tfidf.tfidf(term, 1));
+  }
+
+  // Hitung cosine similarity
+  const dot = vec1.reduce((sum, v, i) => sum + v * vec2[i], 0);
+  const mag1 = Math.sqrt(vec1.reduce((sum, v) => sum + v * v, 0));
+  const mag2 = Math.sqrt(vec2.reduce((sum, v) => sum + v * v, 0));
+
+  return mag1 && mag2 ? dot / (mag1 * mag2) : 0;
 }
 
 async function nerCheck(summary, serpResults) {
   try {
-    const articles = serpResults.map(r => r.judul + ' ' + r.snippet);
+    // Gunakan summarized jika tersedia untuk komparasi yang lebih konsisten
+    const articles = serpResults.map(r => r.summarized || r.judul + ' ' + r.snippet);
     const res = await axios.post(`${process.env.BERT_API_URL}/ner`, { summary, articles }, {
       headers: { 'ngrok-skip-browser-warning': 'true' },
       timeout: 15000
@@ -140,7 +178,7 @@ async function nerCheck(summary, serpResults) {
   }
 }
 
-async function decisionFusion(serpResults, bertResult, threshold = 1, simThreshold = 0.08) {
+async function decisionFusion(serpResults, bertResult, threshold = 1, simThreshold = 0.15) {
   let E = 0;
   let T = 0;
 
@@ -156,8 +194,9 @@ async function decisionFusion(serpResults, bertResult, threshold = 1, simThresho
   // Jika tidak ada keyword match, gunakan similarity + NER number check
   if (E === 0 && T === 0 && serpResults.length > 0) {
     const summary = bertResult?._summary || '';
+    // Gunakan field summarized jika tersedia, fallback ke judul+snippet
     const similarities = serpResults.map(r =>
-      jaccardSimilarity(summary, r.judul + ' ' + r.snippet)
+      cosineSimilarity(summary, r.summarized || r.judul + ' ' + r.snippet)
     );
     const avgSim = similarities.reduce((a, b) => a + b, 0) / similarities.length;
 
@@ -274,7 +313,7 @@ function formatResult(bertResult, factResults, serpResults, fusion = null) {
   } else if (fusion && fusion.source === 'similarity') {
     msg += `_Diputuskan berdasarkan kemiripan topik artikel (similarity: ${fusion.avgSim})_\n`;
   } else if (fusion && fusion.source === 'ner') {
-    msg += `_Topik cocok tapi entitas tidak sesuai artikel (similarity: ${fusion.avgSim})_\n`;
+    msg += `_Topik cocok tapi entitas tidak sesuai artikel_\n`;
     if (fusion.nerDetail) msg += `_Entitas mencurigakan: ${fusion.nerDetail}_\n`;
   } else {
     msg += `_Diputuskan berdasarkan model BERT_\n`;
@@ -326,4 +365,4 @@ function formatResult(bertResult, factResults, serpResults, fusion = null) {
   return msg;
 }
 
-module.exports = { summarize, classifyBert, factCheck, searchSerpApi, formatResult, decisionFusion };
+module.exports = { summarize, classifyBert, factCheck, searchSerpApi, summarizeArticles, formatResult, decisionFusion };

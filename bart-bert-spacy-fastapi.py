@@ -9,6 +9,7 @@ from transformers import (
 import torch
 import torch.nn.functional as F
 import spacy
+import re
 
 # ── Konfigurasi ──────────────────────────────────────────────
 BART_MODEL_DIR = "/content/drive/MyDrive/mbart_models/mbart_indosum_final"
@@ -165,12 +166,44 @@ def ner(req: NERRequest):
                 if v not in article_ents[label]:
                     article_ents[label].append(v)
 
-    # Deteksi mismatch: entitas di summary yang tidak ada di artikel manapun
-    mismatch = {}
-    for label, values in summary_ents.items():
-        missing = [v for v in values if v not in article_ents.get(label, [])]
-        if missing:
-            mismatch[label] = missing
+    # Hanya percayai label entitas yang reliable, skip LOC/GPE (sering noise)
+    RELIABLE_LABELS = {"CARDINAL", "ORDINAL", "QUANTITY", "MONEY"}
+
+    def filter_reliable(ents):
+        return {k: v for k, v in ents.items() if k in RELIABLE_LABELS}
+
+    summary_ents = filter_reliable(summary_ents)
+    article_ents = filter_reliable(article_ents)
+
+    # Regex date extractor untuk pola tanggal Indonesia
+    MONTHS = (
+        'januari|februari|maret|april|mei|juni|juli|agustus'
+        '|september|oktober|november|desember'
+    )
+    DATE_PATTERN = re.compile(
+        rf'\b(\d{{1,2}})\s+({MONTHS})\s+(\d{{4}})\b',
+        re.IGNORECASE
+    )
+
+    def extract_dates(text):
+        return [f"{m[0]} {m[1].lower()} {m[2]}" for m in DATE_PATTERN.findall(text)]
+
+    summary_dates = extract_dates(req.summary)
+    article_dates = extract_dates(' '.join(req.articles))
+
+    # Cek mismatch tanggal
+    date_mismatch = [d for d in summary_dates if d not in article_dates]
+    if date_mismatch:
+        summary_ents["DATE"] = summary_dates
+        article_ents["DATE"] = article_dates
+        mismatch = {"DATE": date_mismatch}
+    else:
+        # Cek mismatch entitas lain (angka, dll)
+        mismatch = {}
+        for label, values in summary_ents.items():
+            missing = [v for v in values if v not in article_ents.get(label, [])]
+            if missing:
+                mismatch[label] = missing
 
     return {
         "summary_entities": summary_ents,

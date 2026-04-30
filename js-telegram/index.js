@@ -1,7 +1,7 @@
 require('dotenv').config();
 const TelegramBot = require('node-telegram-bot-api');
 const { setState, getState, clearState } = require('./state');
-const { summarize, classifyBert, factCheck, searchSerpApi, formatResult, decisionFusion } = require('./api');
+const { summarize, classifyBert, factCheck, searchSerpApi, summarizeArticles, formatResult, decisionFusion } = require('./api');
 
 const bot = new TelegramBot(process.env.TELEGRAM_BOT_TOKEN, { polling: true });
 
@@ -73,11 +73,17 @@ bot.on('message', async (msg) => {
     bot.sendMessage(chatId, '🔎 *Step 3/3: Pengecekan Fakta*', { parse_mode: 'Markdown' });
 
     const factResults = await factCheck(summary);
-    const serpResults = factResults.length === 0 ? await searchSerpApi(summary) : [];
+    let serpResults = factResults.length === 0 ? await searchSerpApi(summary) : [];
 
     if (factResults.length === 0 && serpResults.length === 0) {
       bot.sendMessage(chatId, 'Tidak ditemukan informasi terkait klaim ini di internet.');
     } else {
+      // Summarize artikel SerpAPI agar komparasi lebih konsisten
+      if (serpResults.length > 0) {
+        bot.sendMessage(chatId, '📰 Meringkas artikel referensi...');
+        serpResults = await summarizeArticles(serpResults);
+      }
+
       const fusion = serpResults.length > 0
         ? await decisionFusion(serpResults, { ...bertResult, _summary: summary })
         : null;
