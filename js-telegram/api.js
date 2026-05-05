@@ -168,12 +168,19 @@ async function nerCheck(summary, serpResults) {
   try {
     // Gunakan summarized jika tersedia untuk komparasi yang lebih konsisten
     const articles = serpResults.map(r => r.summarized || r.judul + ' ' + r.snippet);
-    const res = await axios.post(`${process.env.BERT_API_URL}/ner`, { summary, articles }, {
+    
+    // Call FastAPI NER endpoint
+    const res = await axios.post(`${process.env.BERT_API_URL}/ner`, {
+      summary: summary,
+      articles: articles
+    }, {
       headers: { 'ngrok-skip-browser-warning': 'true' },
       timeout: 15000
     });
-    return res.data; // { summary_entities, article_entities, mismatch, has_mismatch }
-  } catch {
+    
+    return res.data; // { user_entities, evidence_entities, mismatches, has_mismatch, risk_score }
+  } catch (err) {
+    console.error('[nerCheck] error:', err.message);
     return null; // fallback ke regex jika endpoint tidak tersedia
   }
 }
@@ -208,7 +215,9 @@ async function decisionFusion(serpResults, bertResult, threshold = 1, simThresho
         : detectNumberMismatch(summary, serpResults).mismatch;
 
       const mismatchDetail = spacyjResult
-        ? Object.entries(spacyjResult.mismatch).map(([k, v]) => `${k}: ${v.join(', ')}`).join(' | ')
+        ? (spacyjResult.mismatches || []).map(m => 
+            `${m.category}: ${m.user_text} (user: ${m.user_value}, evidence: ${m.evidence_values.join('/')})`
+          ).join(' | ')
         : detectNumberMismatch(summary, serpResults).mismatchedNums?.join(', ');
 
       if (hasMismatch) {
@@ -246,7 +255,9 @@ async function decisionFusion(serpResults, bertResult, threshold = 1, simThresho
 
       if (hasMismatch) {
         const mismatchDetail = spacyjResult
-          ? Object.entries(spacyjResult.mismatch).map(([k, v]) => `${k}: ${v.join(', ')}`).join(' | ')
+          ? (spacyjResult.mismatches || []).map(m => 
+              `${m.category}: ${m.user_text} (user: ${m.user_value}, evidence: ${m.evidence_values.join('/')})`
+            ).join(' | ')
           : detectNumberMismatch(summary, serpResults).mismatchedNums?.join(', ');
 
         return { label: 'HOAKS', source: 'ner', E, T, diff, avgSim: null, nerDetail: mismatchDetail };
@@ -269,7 +280,8 @@ function stripMd(text) {
     .replace(/\*\*(.*?)\*\*/g, '$1')
     .replace(/\*(.*?)\*/g, '$1')
     .replace(/__(.*?)__/g, '$1')
-    .replace(/_(.*?)_/g, '$1');
+    .replace(/_(.*?)_/g, '$1')
+    .replace(/[_*`[\]]/g, '');
 }
 
 function formatResult(bertResult, factResults, serpResults, fusion = null) {
@@ -314,7 +326,7 @@ function formatResult(bertResult, factResults, serpResults, fusion = null) {
     msg += `_Diputuskan berdasarkan kemiripan topik artikel (similarity: ${fusion.avgSim})_\n`;
   } else if (fusion && fusion.source === 'ner') {
     msg += `_Topik cocok tapi entitas tidak sesuai artikel_\n`;
-    if (fusion.nerDetail) msg += `_Entitas mencurigakan: ${fusion.nerDetail}_\n`;
+    if (fusion.nerDetail) msg += `_Entitas mencurigakan: ${stripMd(fusion.nerDetail)}_\n`;
   } else {
     msg += `_Diputuskan berdasarkan model BERT_\n`;
   }
@@ -343,7 +355,7 @@ function formatResult(bertResult, factResults, serpResults, fusion = null) {
       msg += `*${i + 1}.* ${stripMd(r.klaim)}\n`;
       msg += `   📌 Rating: ${stripMd(r.rating)}\n`;
       msg += `   🏛️ Sumber: ${stripMd(r.sumber)}\n`;
-      if (r.url) msg += `   🔗 ${r.url}\n`;
+      if (r.url) msg += `   [🔗 Lihat Sumber](${r.url})\n`;
       msg += '\n';
     });
   }
@@ -352,9 +364,12 @@ function formatResult(bertResult, factResults, serpResults, fusion = null) {
     msg += `${'─'.repeat(28)}\n`;
     msg += `📎 *Referensi dari Google:*\n\n`;
     serpResults.forEach((r, i) => {
+      const isSummarized = r.summarized && r.summarized !== (r.judul + '. ' + r.snippet) && r.summarized !== r.snippet;
+      const label = isSummarized ? '📝 _Ringkasan:_' : '📄 _Snippet:_';
       msg += `*${i + 1}.* ${stripMd(r.judul)}\n`;
-      msg += `${stripMd(r.snippet)}\n`;
-      msg += `🔗 ${r.url}\n\n`;
+      msg += `${label} ${stripMd(r.summarized || r.snippet)}\n`;
+      if (r.url) msg += `[🔗 Baca Selengkapnya](${r.url})\n`;
+      msg += '\n';
     });
   }
 
