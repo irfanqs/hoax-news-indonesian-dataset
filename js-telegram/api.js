@@ -16,27 +16,6 @@ async function summarize(text) {
   return res.data.summary;
 }
 
-// ── BART Summarize Articles (batch) ──────────────────────────
-
-async function summarizeArticles(serpResults) {
-  return await Promise.all(
-    serpResults.map(async (r) => {
-      const combined = `${r.judul}. ${r.snippet}`;
-      try {
-        // Snippet sudah pendek, cukup gabung judul+snippet sebagai "summary"-nya
-        // Hanya panggil BART jika teks cukup panjang (> 100 karakter)
-        if (combined.length > 100) {
-          const summary = await summarize(combined);
-          return { ...r, summarized: summary };
-        }
-        return { ...r, summarized: combined };
-      } catch {
-        return { ...r, summarized: combined }; // fallback ke teks asli
-      }
-    })
-  );
-}
-
 // ── BERT Classification ───────────────────────────────────────
 
 async function classifyBert(text) {
@@ -96,14 +75,79 @@ async function searchSerpApi(query) {
 
 // ── Decision Fusion ───────────────────────────────────────────
 
-const HOAX_KEYWORDS = [
-  'hoaks', 'hoax', 'palsu', 'tidak benar', 'salah', 'menyesatkan',
-  'disinformasi', 'klarifikasi', 'bohong', 'keliru', 'tidak terbukti', 'dibantah'
+// Regex pola kata kunci dalam berbagai bentuk morfologi Indonesia.
+// Gunakan \b untuk word boundary agar tidak false-match substring
+// (contoh: "sebenarnya" ≠ "benar", "faktabersama" → masih match karena prefix \bfakta)
+const HOAX_PATTERNS = [
+  // hoax / hoaks dan turunannya
+  /\bhoaks?\b/i,
+  /\b(?:di|meng|peng)hoaks?\b/i,           // dihoaks, menghoaks
+
+  // palsu / pemalsuan
+  /\bpalsu\b/i,
+  /\b(?:me)?malsukan\b/i,                  // memalsukan
+  /\bdipalsukan\b/i,
+
+  // bohong / kebohongan
+  /\bbohong\b/i,
+  /\b(?:mem)?bohongi?\b/i,                 // membohongi
+  /\bkebohongan\b/i,
+
+  // bantah
+  /\bbantah\b/i,
+  /\bdibantah\b/i,
+  /\bmembantah\b/i,
+  /\bterbantahkan\b/i,
+
+  // sesat / menyesatkan
+  /\bsesat\b/i,
+  /\bmenyesatkan\b/i,
+
+  // klarifikasi (konteks bantahan)
+  /\bklarifikasi\b/i,
+  /\b(?:di|meng)klarifikasi\b/i,           // diklarifikasi, mengklarifikasi
+
+  // frasa
+  /\btidak\s+benar\b/i,
+  /\btidak\s+terbukti\b/i,
+
+  // lainnya
+  /\bkeliru\b/i,
+  /\bkekeliruan\b/i,
+  /\bdisinformasi\b/i,
 ];
-const FACT_KEYWORDS = [
-  'benar', 'fakta', 'valid', 'resmi', 'terbukti', 'konfirmasi',
-  'sahih', 'akurat', 'benar adanya', 'telah dikonfirmasi'
+
+const FACT_PATTERNS = [
+  // fakta dan turunannya — \bfakta cukup utk tangkap "faktanya", "faktual"
+  /\bfakta/i,                               // fakta, faktanya, faktual
+
+  // konfirmasi
+  /\bkonfirmasi\b/i,
+  /\b(?:di|meng|ter)konfirmasi\b/i,        // dikonfirmasi, terkonfirmasi
+
+  // terbukti / dibuktikan
+  /\bterbukti\b/i,
+  /\b(?:di|mem)buktikan\b/i,              // dibuktikan, membuktikan
+
+  // benar — hanya bentuk yang jelas bermakna "divalidasi" (bukan "sebenarnya")
+  /\bbenar\s+adanya\b/i,
+  /\bmembenarkan\b/i,
+  /\bdibenarkan\b/i,
+
+  // resmi / diresmikan
+  /\bresmi\b/i,
+  /\bdiresmikan\b/i,
+
+  // lainnya
+  /\bsahih\b/i,
+  /\bakurat\b/i,
+  /\bkeakuratan\b/i,
+  /\bvalid(?:asi)?\b/i,                    // valid, validasi
 ];
+
+function hasPattern(text, patterns) {
+  return patterns.some(p => p.test(text));
+}
 
 // ── Regex NER: Number Extraction ─────────────────────────────
 
@@ -177,18 +221,14 @@ function cosineSimilarity(text1, text2) {
 
 async function nerCheck(summary, serpResults) {
   try {
-    // Gunakan summarized jika tersedia untuk komparasi yang lebih konsisten
-    const articles = serpResults.map(r => r.summarized || r.judul + ' ' + r.snippet);
-    
-    // Call FastAPI NER endpoint
+    const articles = serpResults.map(r => r.judul + ' ' + r.snippet);
     const res = await axios.post(`${process.env.BERT_API_URL}/ner`, {
-      summary: summary,
-      articles: articles
+      summary,
+      articles
     }, {
       headers: { 'ngrok-skip-browser-warning': 'true' },
       timeout: 15000
     });
-    
     return res.data; // { user_entities, evidence_entities, mismatches, has_mismatch, risk_score }
   } catch (err) {
     console.error('[nerCheck] error:', err.message);
@@ -197,93 +237,68 @@ async function nerCheck(summary, serpResults) {
 }
 
 async function decisionFusion(serpResults, bertResult, threshold = 1, simThreshold = 0.15) {
-  let E = 0;
-  let T = 0;
-
-  for (const r of serpResults) {
-    const combined = (r.judul + ' ' + r.snippet).toLowerCase();
-    const hasHoax = HOAX_KEYWORDS.some(k => combined.includes(k));
-    const hasFact = FACT_KEYWORDS.some(k => combined.includes(k));
-
-    if (hasHoax && !hasFact) E++;
-    else if (hasFact && !hasHoax) T++;
-  }
-
-  // Jika tidak ada keyword match, gunakan similarity + NER number check
-  if (E === 0 && T === 0 && serpResults.length > 0) {
-    const summary = bertResult?._summary || '';
-    // Gunakan field summarized jika tersedia, fallback ke judul+snippet
-    const similarities = serpResults.map(r =>
-      cosineSimilarity(summary, r.summarized || r.judul + ' ' + r.snippet)
-    );
-    const avgSim = similarities.reduce((a, b) => a + b, 0) / similarities.length;
-
-    if (avgSim >= simThreshold) {
-      // Topik sama → cek mismatch entitas via spaCy, fallback ke regex
-      const spacyjResult = await nerCheck(summary, serpResults);
-      const hasMismatch = spacyjResult
-        ? spacyjResult.has_mismatch
-        : detectNumberMismatch(summary, serpResults).mismatch;
-
-      const mismatchDetail = spacyjResult
-        ? (spacyjResult.mismatches || []).map(m => 
-            `${m.category}: ${m.user_text} (user: ${formatValueDisplay(m.category, m.user_value)}, evidence: ${m.evidence_values.map(v => formatValueDisplay(m.category, v)).join('/')})`
-          ).join(' | ')
-        : detectNumberMismatch(summary, serpResults).mismatchedNums?.join(', ');
-
-      if (hasMismatch && mismatchDetail.length > 0) {
-        return {
-          label: 'HOAKS', // Kembalikan ke HOAKS karena DATE memamg penting
-          source: 'ner',
-          E, T,
-          diff: 0,
-          avgSim: avgSim.toFixed(3),
-          nerDetail: mismatchDetail
-        };
-      }
-      T = serpResults.length;
-    }
-
-    return {
-      label: T > 0 ? 'BENAR' : (bertResult ? bertResult.label : 'TIDAK DAPAT DIPASTIKAN'),
-      source: T > 0 ? 'similarity' : 'bert',
-      E, T,
-      diff: Math.abs(E - T),
-      avgSim: avgSim.toFixed(3)
-    };
-  }
-
-  const diff = Math.abs(E - T);
   const summary = bertResult?._summary || '';
 
-  if (diff >= threshold) {
-    // Keyword match cukup kuat → tetap cek NER sebelum memutuskan
-    if (E <= T) {
-      const spacyjResult = await nerCheck(summary, serpResults);
-      const hasMismatch = spacyjResult
-        ? spacyjResult.has_mismatch
-        : detectNumberMismatch(summary, serpResults).mismatch;
+  // ── Step 1: Keyword check di snippet ────────────────────────
+  let E = 0, T = 0;
+  for (const r of serpResults) {
+    const combined = (r.judul + ' ' + r.snippet).toLowerCase();
+    const hasHoax = hasPattern(combined, HOAX_PATTERNS);
+    const hasFact = hasPattern(combined, FACT_PATTERNS);
+    // Hoax keyword selalu menang atas fakta keyword:
+    // Artikel "Cek Fakta" punya keduanya (judul: "fakta", snippet: "tidak benar/hoaks")
+    // → tetap hitung sebagai bukti hoaks
+    if (hasHoax) E++;
+    else if (hasFact) T++;
+  }
 
-      if (hasMismatch) {
-        const mismatchDetail = spacyjResult
-          ? (spacyjResult.mismatches || []).map(m => 
-              `${m.category}: ${m.user_text} (user: ${formatValueDisplay(m.category, m.user_value)}, evidence: ${m.evidence_values.map(v => formatValueDisplay(m.category, v)).join('/')})`
-            ).join(' | ')
-          : detectNumberMismatch(summary, serpResults).mismatchedNums?.join(', ');
-
-        if (mismatchDetail.length > 0) {
-           return { label: 'HOAKS', source: 'ner', E, T, diff, avgSim: null, nerDetail: mismatchDetail };
-        }
-      }
+  if (E > 0 || T > 0) {
+    const diff = Math.abs(E - T);
+    if (diff >= threshold) {
+      // Keyword cukup kuat → putuskan langsung tanpa similarity/NER
+      return { label: E > T ? 'HOAKS' : 'BENAR', source: 'external', E, T, diff, avgSim: null };
     }
-    return { label: E > T ? 'HOAKS' : 'BENAR', source: 'external', E, T, diff, avgSim: null };
-  } else {
+    // Keyword ada tapi seri → fallback ke BERT
     return {
       label: bertResult ? bertResult.label : 'TIDAK DAPAT DIPASTIKAN',
-      source: 'bert',
-      E, T, diff, avgSim: null
+      source: 'bert', E, T, diff, avgSim: null
     };
   }
+
+  // ── Step 2: Tidak ada keyword → similarity check ─────────────
+  const similarities = serpResults.map(r =>
+    cosineSimilarity(summary, r.judul + ' ' + r.snippet)
+  );
+  const avgSim = similarities.reduce((a, b) => a + b, 0) / similarities.length;
+
+  if (avgSim < simThreshold) {
+    // Topik tidak relevan → fallback ke BERT
+    return {
+      label: bertResult ? bertResult.label : 'TIDAK DAPAT DIPASTIKAN',
+      source: 'bert', E, T, diff: 0, avgSim: avgSim.toFixed(3)
+    };
+  }
+
+  // ── Step 3: Topik sama → NER entity mismatch check ───────────
+  const nerResult = await nerCheck(summary, serpResults);
+  const hasMismatch = nerResult
+    ? nerResult.has_mismatch
+    : detectNumberMismatch(summary, serpResults).mismatch;
+
+  if (hasMismatch) {
+    const mismatchDetail = nerResult
+      ? (nerResult.mismatches || []).map(m =>
+          `${m.category}: ${m.user_text} (user: ${formatValueDisplay(m.category, m.user_value)}, evidence: ${m.evidence_values.map(v => formatValueDisplay(m.category, v)).join('/')})`
+        ).join(' | ')
+      : detectNumberMismatch(summary, serpResults).mismatchedNums?.join(', ');
+
+    if (mismatchDetail && mismatchDetail.length > 0) {
+      return { label: 'HOAKS', source: 'ner', E, T, diff: 0, avgSim: avgSim.toFixed(3), nerDetail: mismatchDetail };
+    }
+  }
+
+  // Topik sama, tidak ada mismatch → BENAR
+  return { label: 'BENAR', source: 'similarity', E, T, diff: 0, avgSim: avgSim.toFixed(3) };
 }
 
 // ── Format hasil (Rule-Based, tanpa LLM) ─────────────────────
@@ -377,10 +392,8 @@ function formatResult(bertResult, factResults, serpResults, fusion = null) {
     msg += `${'─'.repeat(28)}\n`;
     msg += `📎 *Referensi dari Google:*\n\n`;
     serpResults.forEach((r, i) => {
-      const isSummarized = r.summarized && r.summarized !== (r.judul + '. ' + r.snippet) && r.summarized !== r.snippet;
-      const label = isSummarized ? '📝 _Ringkasan:_' : '📄 _Snippet:_';
       msg += `*${i + 1}.* ${stripMd(r.judul)}\n`;
-      msg += `${label} ${stripMd(r.summarized || r.snippet)}\n`;
+      msg += `📄 _Snippet:_ ${stripMd(r.snippet)}\n`;
       if (r.url) msg += `[🔗 Baca Selengkapnya](${r.url})\n`;
       msg += '\n';
     });
@@ -393,4 +406,4 @@ function formatResult(bertResult, factResults, serpResults, fusion = null) {
   return msg;
 }
 
-module.exports = { summarize, classifyBert, factCheck, searchSerpApi, summarizeArticles, formatResult, decisionFusion };
+module.exports = { summarize, classifyBert, factCheck, searchSerpApi, formatResult, decisionFusion };
