@@ -139,6 +139,17 @@ function detectNumberMismatch(summary, serpResults) {
   };
 }
 
+function formatValueDisplay(category, value) {
+  if (category === 'DATE' && value >= 10000000) {
+    const str = String(value);
+    const year = str.slice(0, 4);
+    const month = str.slice(4, 6);
+    const day = str.slice(6, 8);
+    return `${day}/${month}/${year}`;
+  }
+  return value;
+}
+
 function cosineSimilarity(text1, text2) {
   const tfidf = new TfIdf();
   tfidf.addDocument(text1.toLowerCase());
@@ -216,13 +227,13 @@ async function decisionFusion(serpResults, bertResult, threshold = 1, simThresho
 
       const mismatchDetail = spacyjResult
         ? (spacyjResult.mismatches || []).map(m => 
-            `${m.category}: ${m.user_text} (user: ${m.user_value}, evidence: ${m.evidence_values.join('/')})`
+            `${m.category}: ${m.user_text} (user: ${formatValueDisplay(m.category, m.user_value)}, evidence: ${m.evidence_values.map(v => formatValueDisplay(m.category, v)).join('/')})`
           ).join(' | ')
         : detectNumberMismatch(summary, serpResults).mismatchedNums?.join(', ');
 
-      if (hasMismatch) {
+      if (hasMismatch && mismatchDetail.length > 0) {
         return {
-          label: 'HOAKS',
+          label: 'HOAKS', // Kembalikan ke HOAKS karena DATE memamg penting
           source: 'ner',
           E, T,
           diff: 0,
@@ -256,11 +267,13 @@ async function decisionFusion(serpResults, bertResult, threshold = 1, simThresho
       if (hasMismatch) {
         const mismatchDetail = spacyjResult
           ? (spacyjResult.mismatches || []).map(m => 
-              `${m.category}: ${m.user_text} (user: ${m.user_value}, evidence: ${m.evidence_values.join('/')})`
+              `${m.category}: ${m.user_text} (user: ${formatValueDisplay(m.category, m.user_value)}, evidence: ${m.evidence_values.map(v => formatValueDisplay(m.category, v)).join('/')})`
             ).join(' | ')
           : detectNumberMismatch(summary, serpResults).mismatchedNums?.join(', ');
 
-        return { label: 'HOAKS', source: 'ner', E, T, diff, avgSim: null, nerDetail: mismatchDetail };
+        if (mismatchDetail.length > 0) {
+           return { label: 'HOAKS', source: 'ner', E, T, diff, avgSim: null, nerDetail: mismatchDetail };
+        }
       }
     }
     return { label: E > T ? 'HOAKS' : 'BENAR', source: 'external', E, T, diff, avgSim: null };
@@ -325,8 +338,8 @@ function formatResult(bertResult, factResults, serpResults, fusion = null) {
   } else if (fusion && fusion.source === 'similarity') {
     msg += `_Diputuskan berdasarkan kemiripan topik artikel (similarity: ${fusion.avgSim})_\n`;
   } else if (fusion && fusion.source === 'ner') {
-    msg += `_Topik cocok tapi entitas tidak sesuai artikel_\n`;
-    if (fusion.nerDetail) msg += `_Entitas mencurigakan: ${stripMd(fusion.nerDetail)}_\n`;
+    msg += `_Berita mirip, tetapi detil klaim angka di entitas tidak sesuai artikel_\n`;
+    if (fusion.nerDetail) msg += `_Entitas mismatch: ${stripMd(fusion.nerDetail)}_\n`;
   } else {
     msg += `_Diputuskan berdasarkan model BERT_\n`;
   }
