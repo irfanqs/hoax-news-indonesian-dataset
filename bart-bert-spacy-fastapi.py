@@ -1,64 +1,3 @@
-# =============================================================================
-# HOAX DETECTION API — Google Colab Setup
-# =============================================================================
-#
-# CARA PAKAI DI COLAB (jalankan cell berurutan):
-#
-# ┌─ CELL 1: Install dependencies ─────────────────────────────────────────┐
-# │  !pip install fastapi "uvicorn[standard]" pyngrok nest-asyncio         │
-# │  !pip install transformers torch accelerate                            │
-# └────────────────────────────────────────────────────────────────────────┘
-#
-# ┌─ CELL 2: Mount Google Drive ────────────────────────────────────────────┐
-# │  from google.colab import drive                                         │
-# │  drive.mount('/content/drive')                                          │
-# └────────────────────────────────────────────────────────────────────────┘
-#
-# ┌─ CELL 3: (opsional) Pre-download BERT NER ke Drive ────────────────────┐
-# │  Jalankan ini SEKALI agar model tersimpan di Drive (~440MB).           │
-# │  Selanjutnya model akan load dari Drive, bukan internet.               │
-# │                                                                         │
-# │  from transformers import AutoTokenizer, AutoModelForTokenClassification│
-# │  import os, shutil                                                      │
-# │                                                                         │
-# │  NER_SAVE_DIR = "/content/drive/MyDrive/bert-indonesian-ner"           │
-# │  if not os.path.exists(NER_SAVE_DIR):                                  │
-# │      tok = AutoTokenizer.from_pretrained("cahya/bert-base-indonesian-NER")│
-# │      mdl = AutoModelForTokenClassification.from_pretrained(            │
-# │                "cahya/bert-base-indonesian-NER")                       │
-# │      tok.save_pretrained(NER_SAVE_DIR)                                 │
-# │      mdl.save_pretrained(NER_SAVE_DIR)                                 │
-# │      print("✓ Model tersimpan di Drive")                               │
-# │  else:                                                                  │
-# │      print("✓ Model sudah ada di Drive")                               │
-# └────────────────────────────────────────────────────────────────────────┘
-#
-# ┌─ CELL 4: Tulis app.py  ←  CELL INI (jalankan %%writefile) ────────────┐
-# └────────────────────────────────────────────────────────────────────────┘
-#
-# ┌─ CELL 5: Jalankan server ───────────────────────────────────────────────┐
-# │  import nest_asyncio, uvicorn, threading                                │
-# │  from pyngrok import ngrok                                              │
-# │  from app import app                                                    │
-# │                                                                         │
-# │  nest_asyncio.apply()                                                   │
-# │  # ngrok.set_auth_token("ISI_TOKEN_NGROK_KAMU")                        │
-# │  public_url = ngrok.connect(8000)                                       │
-# │  print(f"🚀 API URL: {public_url}")                                    │
-# │  print(f"   Set BERT_API_URL={public_url} di .env Telegram bot")       │
-# │  threading.Thread(                                                      │
-# │      target=lambda: uvicorn.run(app, host="0.0.0.0", port=8000),       │
-# │      daemon=True                                                        │
-# │  ).start()                                                              │
-# └────────────────────────────────────────────────────────────────────────┘
-#
-# MODEL YANG DIBUTUHKAN DI GOOGLE DRIVE:
-#   /MyDrive/mbart_indosum_final/           ← model BART summarisasi
-#   /MyDrive/indobert-hoax-model/checkpoint-7185/  ← model BERT klasifikasi
-#   /MyDrive/bert-indonesian-ner/           ← BERT NER (buat via Cell 3)
-#                                              atau biarkan auto-download
-# =============================================================================
-
 %%writefile app.py
 from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel
@@ -75,19 +14,18 @@ import re
 import os
 from difflib import SequenceMatcher
 
-# ── Konfigurasi path model ─────────────────────────────────────────────────
+# Konfigurasi path model
 BART_MODEL_DIR    = "/content/drive/MyDrive/mbart_indosum_final"
 BERT_MODEL_DIR    = "/content/drive/MyDrive/indobert-hoax-model/checkpoint-7185"
 BERT_TOKENIZER    = "indobenchmark/indobert-base-p1"
 
-# Gunakan model dari Drive jika sudah disimpan (Cell 3), otherwise HuggingFace
-_NER_DRIVE        = "/content/drive/MyDrive/bert-indonesian-ner"
-NER_MODEL_NAME    = _NER_DRIVE if os.path.isdir(_NER_DRIVE) else "cahya/bert-base-indonesian-NER"
+_NER_DRIVE     = "/content/drive/MyDrive/bert-indonesian-ner"
+NER_MODEL_NAME = _NER_DRIVE if os.path.isdir(_NER_DRIVE) else "cahya/bert-base-indonesian-NER"
 
 device = "cuda" if torch.cuda.is_available() else "cpu"
 print(f"Device: {device}")
 
-# ── Load BART ──────────────────────────────────────────────────────────────
+# Load BART
 print("Loading BART...")
 bart_tokenizer = AutoTokenizer.from_pretrained(BART_MODEL_DIR, use_fast=True)
 bart_tokenizer.src_lang = "id_ID"
@@ -95,7 +33,7 @@ bart_model = MBartForConditionalGeneration.from_pretrained(BART_MODEL_DIR)
 bart_model.to(device).eval()
 print("✓ BART loaded")
 
-# ── Load BERT Classification ───────────────────────────────────────────────
+# Load BERT Classification
 print("Loading BERT Classification...")
 bert_tokenizer = AutoTokenizer.from_pretrained(BERT_TOKENIZER)
 bert_model = AutoModelForSequenceClassification.from_pretrained(BERT_MODEL_DIR)
@@ -103,9 +41,7 @@ bert_model.to(device).eval()
 id2label = bert_model.config.id2label
 print(f"✓ BERT Classification loaded — labels: {id2label}")
 
-# ── Load BERT NER (cahya/bert-base-indonesian-NER) ─────────────────────────
-# Entity types: PER (person), ORG (organization), LOC (location),
-#               QTY (quantity/number), TIM (time/date), EVT (event)
+# Load BERT NER (cahya/bert-base-indonesian-NER)
 print(f"Loading BERT NER dari: {NER_MODEL_NAME}")
 ner_model = pipeline(
     "ner",
@@ -116,17 +52,32 @@ ner_model = pipeline(
 )
 print("✓ BERT NER loaded")
 
+_MONTH_MAP = {
+    'januari': 1, 'februari': 2, 'maret': 3, 'april': 4,
+    'mei': 5, 'juni': 6, 'juli': 7, 'agustus': 8,
+    'september': 9, 'oktober': 10, 'november': 11, 'desember': 12,
+    'january': 1, 'february': 2, 'march': 3, 'may': 5,
+    'june': 6, 'july': 7, 'august': 8, 'october': 10, 'december': 12,
+}
 
-# ══════════════════════════════════════════════════════════════════════════════
-# NER Helper Functions
-# ══════════════════════════════════════════════════════════════════════════════
+def _parse_date(text: str) -> Optional[tuple]:
+    """
+    Parse tanggal dari teks TIM entity → (day, month, year) atau None.
+    """
+    t = text.lower()
+    month = next((v for k, v in _MONTH_MAP.items() if k in t), None)
+    numbers = [int(n) for n in re.findall(r'\d+', t)]
+    year  = next((n for n in numbers if 2000 <= n <= 2100), None)
+    day   = next((n for n in numbers if 1 <= n <= 31 and n != year), None)
+    if day is not None and month is not None and year is not None:
+        return (day, month, year)
+    return None
+
 
 def _extract_number(text: str) -> Optional[float]:
-    """Ekstrak nilai numerik dari teks entitas QTY / TIM."""
+    """Ekstrak nilai numerik dari teks entitas QTY."""
     t = text.lower()
-    # Hapus titik ribuan Indonesia (1.000 → 1000)
     cleaned = re.sub(r'(?<=\d)\.(?=\d{3}(?!\d))', '', t)
-    # Ganti koma desimal dengan titik
     cleaned = cleaned.replace(',', '.')
     match = re.search(r'\d+(?:\.\d+)?', cleaned)
     if not match:
@@ -144,31 +95,51 @@ def _fuzzy(a: str, b: str) -> float:
     return SequenceMatcher(None, a.lower().strip(), b.lower().strip()).ratio()
 
 
+def _tim_match(u_text: str, e_text: str) -> bool:
+    """
+    Bandingkan dua entitas TIM (tanggal/waktu).
+    Jika keduanya adalah tanggal lengkap, bandingkan hari+bulan+tahun secara eksak.
+    Fallback ke fuzzy ≥ 0.92 (threshold tinggi agar beda hari kecil tetap terdeteksi).
+    """
+    u_date = _parse_date(u_text)
+    e_date = _parse_date(e_text)
+    if u_date and e_date:
+        return u_date == e_date  # harus sama persis
+    return _fuzzy(u_text, e_text) >= 0.92
+
+
 def _entities_match(u: Dict, e: Dict, etype: str) -> bool:
     """
     Cek apakah dua entitas dianggap cocok.
-    - QTY / TIM  → bandingkan nilai numerik, toleransi 20 %
+    - TIM → bandingkan tanggal eksak (hari+bulan+tahun)
+    - QTY → bandingkan nilai numerik, toleransi 10%
     - PER / ORG / LOC / EVT → fuzzy string ≥ 0.72
     """
     u_text = u['word'].strip()
     e_text = e['word'].strip()
 
-    if etype in ('QTY', 'TIM'):
+    if etype == 'TIM':
+        return _tim_match(u_text, e_text)
+
+    if etype == 'QTY':
         u_val = _extract_number(u_text)
         e_val = _extract_number(e_text)
         if u_val is not None and e_val is not None and min(u_val, e_val) > 0:
-            return max(u_val, e_val) / min(u_val, e_val) <= 1.2
-        # Fallback ke string jika tidak ada angka
+            return max(u_val, e_val) / min(u_val, e_val) <= 1.1  # toleransi 10%
         return _fuzzy(u_text, e_text) >= 0.72
-    else:
-        return _fuzzy(u_text, e_text) >= 0.72
+
+    return _fuzzy(u_text, e_text) >= 0.72
 
 
 def _calc_severity(u: Dict, ev_ents: List[Dict], etype: str) -> str:
     """Hitung tingkat keparahan mismatch: HIGH / MEDIUM / LOW."""
     u_text = u['word'].strip()
 
-    if etype in ('QTY', 'TIM'):
+    if etype == 'TIM':
+        # Tanggal berbeda tapi bisa di-parse → selalu HIGH
+        return 'HIGH' if _parse_date(u_text) else 'MEDIUM'
+
+    if etype == 'QTY':
         u_val = _extract_number(u_text)
         if u_val is not None and u_val > 0:
             e_vals = [_extract_number(e['word']) for e in ev_ents]
@@ -185,40 +156,79 @@ def _calc_severity(u: Dict, ev_ents: List[Dict], etype: str) -> str:
     else:                return 'LOW'
 
 
+_DATE_RE = re.compile(
+    r'\b(\d{1,2})\s+(' + '|'.join(_MONTH_MAP.keys()) + r')\s+(\d{4})\b',
+    re.IGNORECASE
+)
+
+def _extract_dates_regex(text: str) -> List[Dict]:
+    """
+    Suplemen BERT NER: ekstrak tanggal "DD Bulan YYYY" pakai regex.
+    Diperlukan karena model cahya/bert-base-indonesian-NER tidak punya label TIM.
+    """
+    results = []
+    seen = set()
+    for m in _DATE_RE.finditer(text):
+        key = m.group(0).lower().strip()
+        if key in seen:
+            continue
+        seen.add(key)
+        results.append({
+            'word':         m.group(0).strip(),
+            'entity_group': 'TIM',
+            'score':        1.0,
+            'start':        m.start(),
+            'end':          m.end(),
+        })
+    return results
+
+
 def _extract_ner(text: str) -> List[Dict]:
     """
-    Ekstrak entitas dari teks menggunakan BERT NER.
+    Ekstrak entitas: BERT NER (PER/ORG/LOC) + regex (TIM/tanggal).
     Teks panjang dipotong per kalimat agar tidak melebihi 512 token.
     """
     if not text or not text.strip():
         return []
 
+    # Bersihkan emoji/karakter non-standar yang bisa crash tokenizer
+    clean_text = re.sub(r'[^\w\s.,\-:/\'\"()!?]', ' ', text, flags=re.UNICODE)
+    clean_text = re.sub(r'\s+', ' ', clean_text).strip()
+
     results = []
-    # Pisah per kalimat untuk teks panjang
-    sentences = re.split(r'(?<=[.!?])\s+', text.strip())
+    sentences = re.split(r'(?<=[.!?])\s+', clean_text)
     offset = 0
     for sent in sentences:
         if not sent.strip():
             offset += len(sent) + 1
             continue
         try:
-            # BERT max ~500 karakter per chunk agar aman
             chunk = sent[:500]
             ents = ner_model(chunk)
             for r in ents:
-                # Filter confidence rendah
-                if r['score'] < 0.70:
+                if r.get('score', 0) < 0.70:
+                    continue
+                raw_label = r.get('entity_group') or r.get('entity', 'O')
+                entity_group = raw_label.split('-', 1)[-1] if '-' in raw_label else raw_label
+                if entity_group in ('O', ''):
+                    continue
+                word = r.get('word', '').replace('##', '').strip()
+                # Filter artefak tokenizer: abaikan entitas ≤ 1 karakter
+                if len(word) <= 1:
                     continue
                 results.append({
-                    'word':         r['word'].replace('##', '').strip(),
-                    'entity_group': r['entity_group'],
-                    'score':        round(r['score'], 4),
-                    'start':        r['start'] + offset,
-                    'end':          r['end']   + offset,
+                    'word':         word,
+                    'entity_group': entity_group,
+                    'score':        round(float(r.get('score', 0)), 4),
+                    'start':        int(r.get('start', 0)) + offset,
+                    'end':          int(r.get('end', 0)) + offset,
                 })
         except Exception as exc:
             print(f"[NER] chunk error: {exc}")
         offset += len(sent) + 1
+
+    # Tambahkan entitas tanggal dari regex (TIM tidak ada di label BERT model)
+    results.extend(_extract_dates_regex(clean_text))
 
     return results
 
@@ -285,18 +295,13 @@ def compare_ner_entities(user_text: str, evidence_texts: List[str]) -> Dict:
     )
 
     return {
-        'user_entities':     [{'text': e['word'], 'category': e['entity_group'], 'score': e['score']} for e in user_ents],
-        'evidence_entities': [{'text': e['word'], 'category': e['entity_group'], 'score': e['score']} for e in ev_ents_all],
+        'user_entities':     [{'text': e['word'], 'category': e['entity_group'], 'score': float(e['score'])} for e in user_ents],
+        'evidence_entities': [{'text': e['word'], 'category': e['entity_group'], 'score': float(e['score'])} for e in ev_ents_all],
         'mismatches':        mismatches,
         'has_mismatch':      len(mismatches) > 0,
-        'mismatch_count':    len(mismatches),
-        'risk_score':        risk_score,
+        'mismatch_count':    int(len(mismatches)),
+        'risk_score':        float(risk_score),
     }
-
-
-# ══════════════════════════════════════════════════════════════════════════════
-# FastAPI App
-# ══════════════════════════════════════════════════════════════════════════════
 
 app = FastAPI(title="Hoax Detection API")
 
@@ -382,5 +387,9 @@ def predict(req: TextRequest):
 def ner(req: NERRequest):
     if not req.summary.strip():
         raise HTTPException(status_code=400, detail="Summary tidak boleh kosong")
-
-    return compare_ner_entities(req.summary, req.articles)
+    try:
+        return compare_ner_entities(req.summary, req.articles)
+    except Exception as exc:
+        import traceback
+        traceback.print_exc()
+        raise HTTPException(status_code=500, detail=f"NER error: {exc}")
